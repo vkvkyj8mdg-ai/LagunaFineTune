@@ -31,7 +31,7 @@ from src import project_config as cfg
 !echo /usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib > /etc/ld.so.conf.d/nvidia-cu13.conf && ldconfig
 # align flashinfer-cubin with whatever flashinfer version vllm resolved
 # (matching cubin wheels lag on PyPI; flashinfer's own index has them)
-!python -c "import importlib.metadata as m; print(m.version('flashinfer'))" | xargs -I{} pip install -q "flashinfer-cubin=={}" --extra-index-url https://flashinfer.ai/whl
+!pip show flashinfer flashinfer-python 2>/dev/null | grep -m1 '^Version:' | awk '{print $2}' | xargs -I{} pip install -q "flashinfer-cubin=={}" --extra-index-url https://flashinfer.ai/whl
 !python -c "from vllm import LLM; print('vllm import OK')"
 
 # %% [markdown]

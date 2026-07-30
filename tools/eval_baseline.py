@@ -27,7 +27,9 @@ def main():
     llm = LLM(model=cfg.BASE_MODEL_INT4, max_model_len=16384,
               gpu_memory_utilization=0.92, trust_remote_code=True)
     results = {}
-    for dataset, limit in (("humaneval", None), ("mbpp", 100)):
+    # full sets only: evalplus's scorer asserts every problem has a sample,
+    # and at vLLM speeds (~3400 tok/s batched) the full run is ~3 minutes
+    for dataset, limit in (("humaneval", None), ("mbpp", None)):
         problems = get_problems(dataset, limit=limit)
         samples, stats = vllm_generate_solutions(llm, tok, problems)
         print(dataset, stats, flush=True)
