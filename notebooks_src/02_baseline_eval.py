@@ -33,10 +33,11 @@ from src import project_config as cfg
 # %%
 # MUST run before the first vllm import, in a kernel that has never imported
 # vllm (vllm registers process-global torch types — a re-import after purging
-# sys.modules crashes). In-process engine: the default multiprocess engine core
-# dies silently in Jupyter/CLI kernels and hides its root cause.
+# sys.modules crashes). spawn, not fork: the kernel has CUDA initialized (the
+# prelude prints GPU info), and a forked engine core inherits broken CUDA state
+# and dies silently. In-process mode is NOT an option in Jupyter (its engine
+# needs sys.stdout.fileno(), which notebook kernels don't provide).
 import os
-os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
 os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
 
 from transformers import AutoTokenizer
