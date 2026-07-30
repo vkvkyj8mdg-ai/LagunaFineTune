@@ -30,6 +30,9 @@ def register_laguna():
     loader.SUPPORTED_MODEL_TYPES.add("laguna")
     loader.LEGACY_KEY_RENAMES.setdefault("laguna", (
         ("mlp.experts.e_score_correction_bias", "mlp.gate.e_score_correction_bias"),
+        # disk stores the shared expert SINGULAR; the built module is PLURAL
+        # (native from_pretrained applies this same rename via WeightRenaming)
+        ("mlp.shared_expert.", "mlp.shared_experts."),
     ))
 
 
