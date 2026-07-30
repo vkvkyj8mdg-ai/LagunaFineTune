@@ -22,10 +22,13 @@ os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 from src import project_config as cfg
 
 # %%
-# vllm PINNED: 0.24.0+ wheels are built against CUDA 13 (libcudart.so.13) and fail
-# to import on Colab's CUDA 12.8 / torch 2.11 image (verified 2026-07-30).
-# 0.23.0 is the newest release that matches the image.
+# vllm PINNED to 0.23.0: newer wheels pull torch/cutlass deps that conflict with
+# Colab's torch 2.11+cu128 image. Even 0.23's kernels link libcudart.so.13, whose
+# runtime ships in vllm's nvidia-* pip deps but OUTSIDE the dynamic-loader path —
+# the symlink+ldconfig below fixes that (verified on A100, 2026-07-30).
 !pip install -q "vllm==0.23.0" evalplus
+!ldconfig -p | grep -q libcudart.so.13 || (ln -sf $(ls /usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcudart.so.13 2>/dev/null || ls /usr/local/lib/python3.12/dist-packages/nvidia/*/lib/libcudart.so.13 | head -1) /usr/lib/x86_64-linux-gnu/libcudart.so.13 && ldconfig)
+!python -c "from vllm import LLM; print('vllm import OK')"
 
 # %%
 from transformers import AutoTokenizer
