@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+venv/
+*.safetensors
+*.gguf
+checkpoints/
+data/cache/
+wandb/
+.ipynb_checkpoints/
+hf_cache/
