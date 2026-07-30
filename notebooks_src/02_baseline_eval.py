@@ -30,46 +30,15 @@ from src import project_config as cfg
 !ldconfig -p | grep -q libcudart.so.13 || (ln -sf $(ls /usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcudart.so.13 2>/dev/null || ls /usr/local/lib/python3.12/dist-packages/nvidia/*/lib/libcudart.so.13 | head -1) /usr/lib/x86_64-linux-gnu/libcudart.so.13 && ldconfig)
 !python -c "from vllm import LLM; print('vllm import OK')"
 
-# %%
-# MUST run before the first vllm import, in a kernel that has never imported
-# vllm (vllm registers process-global torch types — a re-import after purging
-# sys.modules crashes). spawn, not fork: the kernel has CUDA initialized (the
-# prelude prints GPU info), and a forked engine core inherits broken CUDA state
-# and dies silently. In-process mode is NOT an option in Jupyter (its engine
-# needs sys.stdout.fileno(), which notebook kernels don't provide).
-import os
-os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
-
-from transformers import AutoTokenizer
-from vllm import LLM
-tok = AutoTokenizer.from_pretrained(cfg.BASE_MODEL)
-llm = LLM(model=cfg.BASE_MODEL_INT4, max_model_len=16384, gpu_memory_utilization=0.92,
-          trust_remote_code=True)
-
 # %% [markdown]
-# ## HumanEval+ (full) and MBPP+ (subset)
+# ## Run the eval as a PLAIN PROCESS (vLLM cannot start inside a Jupyter kernel:
+# fork inherits kernel CUDA and dies silently, spawn re-imports Jupyter's
+# __main__, in-process needs a real stdout fd — all verified 2026-07-30).
+# The script generates for HumanEval+ (164) + MBPP+ (100), scores with EvalPlus,
+# and pushes base_int4.json to the Hub (notebook 06 reads it for its table).
 
 # %%
-from src.eval_utils import get_problems, vllm_generate_solutions, score
-results = {}
-for dataset, limit in (("humaneval", None), ("mbpp", 100)):
-    problems = get_problems(dataset, limit=limit)
-    samples, stats = vllm_generate_solutions(llm, tok, problems)
-    print(f"{dataset}: {stats}")
-    results[dataset] = {"stats": stats, "eval": score(samples, dataset, tag="base_int4")}
-results
-
-# %% [markdown]
-# ## Persist results to the Hub (notebook 06 pulls these for the comparison table)
-
-# %%
-import json
-from src.hub_utils import ensure_repo, upload_dir
-os.makedirs("/content/results", exist_ok=True)
-with open("/content/results/base_int4.json", "w") as f:
-    json.dump(results, f, indent=1)
-ensure_repo(cfg.hub("eval-results"), repo_type="dataset")
-upload_dir("/content/results", cfg.hub("eval-results"), repo_type="dataset")
+!cd /content/LagunaFineTune && python tools/eval_baseline.py
 
 # %% [markdown]
 # ## (Stretch) 10–25 SWE-bench-Verified instances
