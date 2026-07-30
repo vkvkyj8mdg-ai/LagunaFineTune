@@ -50,10 +50,9 @@ SFT_LORA_ALPHA = 32
 SFT_EXPERT_LORA_R = 4
 SFT_SAVE_EVERY = 40   # steps between adapter checkpoints (~30-40 min)
 
-# Budget guardrails (Colab compute units). MEASURED 2026-07-30 on this account:
-# 15 units for ~50min A100 + ~10min T4 => A100 ≈ 17.5 units/hr. Balance then: 255.
-TOTAL_UNITS = 255
-A100_UNITS_PER_HOUR = 17.5
-SFT_MAX_HOURS = 8          # ≈140 units at the measured rate; notebook 05's
-                           # projection check aborts above this — trim the dataset
-                           # (04 TOTAL) or MAX_LEN instead of blowing the budget
+# Budget guardrails (Colab compute units). MEASURED 2026-07-30 from the live
+# usage panel: A100 = 5.3 units/hr, balance 252.98 → ~47 A100-hours available.
+TOTAL_UNITS = 253
+A100_UNITS_PER_HOUR = 5.3
+SFT_MAX_HOURS = 16         # ~85 units at the measured rate; notebook 05's
+                           # projection check aborts above this
