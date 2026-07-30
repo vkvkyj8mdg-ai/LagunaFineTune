@@ -22,12 +22,13 @@ os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 from src import project_config as cfg
 
 # %%
-# vllm PINNED to 0.23.0: newer wheels pull torch/cutlass deps that conflict with
-# Colab's torch 2.11+cu128 image. Even 0.23's kernels link libcudart.so.13, whose
-# runtime ships in vllm's nvidia-* pip deps but OUTSIDE the dynamic-loader path —
-# the symlink+ldconfig below fixes that (verified on A100, 2026-07-30).
-!pip install -q "vllm==0.23.0" evalplus
-!ldconfig -p | grep -q libcudart.so.13 || (ln -sf $(ls /usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib/libcudart.so.13 2>/dev/null || ls /usr/local/lib/python3.12/dist-packages/nvidia/*/lib/libcudart.so.13 | head -1) /usr/lib/x86_64-linux-gnu/libcudart.so.13 && ldconfig)
+# vllm 0.26.0 (0.23 lacks group-size-128 Marlin MoE support that the INT4
+# checkpoint needs). Its wheels link CUDA-13 libs, which ship via its nvidia-*
+# pip deps but OUTSIDE the dynamic-loader path on Colab's cu12.8 image —
+# registering the cu13 lib dir with ldconfig fixes every one of them at once
+# (verified on A100, 2026-07-30).
+!pip install -q "vllm==0.26.0" evalplus
+!echo /usr/local/lib/python3.12/dist-packages/nvidia/cu13/lib > /etc/ld.so.conf.d/nvidia-cu13.conf && ldconfig
 !python -c "from vllm import LLM; print('vllm import OK')"
 
 # %% [markdown]
