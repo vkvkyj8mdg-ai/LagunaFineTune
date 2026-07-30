@@ -177,11 +177,18 @@ def keep_lists(scores, keep_fraction: float) -> dict:
     return out
 
 
-def save_stats(path, router_stats, norm_stats=None, meta=None):
+def save_stats(path, router_stats, norm_stats=None, meta=None, collector=None):
+    """Persist derived stats, plus RAW accumulators when a collector is given —
+    raw sums are what makes mid-calibration resume possible (Colab VMs have been
+    observed dying ~1h into runs)."""
     payload = {"meta": meta or {},
                "freq": router_stats["freq"].tolist(),
                "mean_gate_active": router_stats["mean_gate_active"].tolist(),
                "mean_norm": norm_stats["mean_norm"].tolist() if norm_stats else None}
+    if collector is not None:
+        payload["raw"] = {"gate_sums": collector.gate_sums.tolist(),
+                          "active_counts": collector.active_counts.tolist(),
+                          "tokens": collector.tokens.tolist()}
     with open(path, "w") as f:
         json.dump(payload, f)
 
@@ -194,3 +201,17 @@ def load_stats(path):
     norm = ({"mean_norm": torch.tensor(p["mean_norm"], dtype=torch.float64)}
             if p.get("mean_norm") else None)
     return router, norm
+
+
+def restore_collector(collector, path):
+    """Reload raw accumulators into a fresh RouterStatsCollector; returns the
+    number of docs already processed (0 if the file has no raw section)."""
+    with open(path) as f:
+        p = json.load(f)
+    raw = p.get("raw")
+    if not raw:
+        return 0
+    collector.gate_sums = torch.tensor(raw["gate_sums"], dtype=torch.float64)
+    collector.active_counts = torch.tensor(raw["active_counts"], dtype=torch.float64)
+    collector.tokens = torch.tensor(raw["tokens"], dtype=torch.float64)
+    return int(p.get("meta", {}).get("docs_done", 0))

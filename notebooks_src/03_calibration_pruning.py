@@ -81,33 +81,52 @@ print(f"cuda allocated: {alloc:.1f} GB (expect ~19-22)")
 assert alloc < 30
 
 # %%
-from src.router_stats import RouterStatsCollector, ExpertNormCollector, save_stats
+# RESUMABLE calibration: accumulators checkpoint to the Hub every 100 docs, and a
+# rerun picks up where the dead VM left off (Colab runtimes have been observed
+# dying ~1h into work — colabtools#5939). batch of ONE, no padding: the MoE block
+# routes every position regardless of attention mask, so pad tokens would pollute
+# the statistics that decide which experts survive.
+from huggingface_hub import hf_hub_download
+from src.hub_utils import api, ensure_repo
+from src.router_stats import (ExpertNormCollector, RouterStatsCollector,
+                              restore_collector, save_stats)
+
 router_c = RouterStatsCollector(model).attach(model)
 norm_c = ExpertNormCollector(model).attach()
+ensure_repo(ART.router_stats, repo_type="dataset")
 
-# batch of ONE, no padding: the MoE block routes every position regardless of the
-# attention mask, so pad tokens would pollute the very statistics that decide
-# which experts survive. ~2x slower than batching; correctness wins.
+start = 0
+try:
+    prev = hf_hub_download(ART.router_stats, "router_stats.json", repo_type="dataset",
+                           force_download=True)
+    start = restore_collector(router_c, prev)
+    print(f"resumed calibration from doc {start}")
+except Exception as e:
+    print(f"no previous stats to resume ({type(e).__name__}) — starting fresh")
+
 SEQ = 2048
 enc = tok(texts, truncation=True, max_length=SEQ, padding=False,
           add_special_tokens=False).input_ids  # template already emitted BOS
 enc = [e for e in enc if len(e) > 256]
+
+def _push_stats(docs_done):
+    save_stats("/content/router_stats.json", router_c.stats(), norm_c.stats(),
+               meta={"docs_done": docs_done, "total": len(enc), "seq": SEQ},
+               collector=router_c)
+    api().upload_file(path_or_fileobj="/content/router_stats.json",
+                      repo_id=ART.router_stats, repo_type="dataset",
+                      path_in_repo="router_stats.json")
+
 with torch.inference_mode():
-    for i, e in enumerate(enc):
-        model(input_ids=torch.tensor([e], device=model.device))
+    for i in range(start, len(enc)):
+        model(input_ids=torch.tensor([enc[i]], device=model.device))
         if i % 50 == 0:
             print(f"{i}/{len(enc)}  tokens so far: {router_c.tokens.sum() / cfg.NUM_LAYERS:.0f}")
+        if i and i % 100 == 0:
+            _push_stats(i + 1)
 router_c.detach(); norm_c.detach()
-
-rs, ns = router_c.stats(), norm_c.stats()
-save_stats("/content/router_stats.json", rs, ns, meta={"docs": len(enc), "seq": SEQ})
-
-# %%
-from src.hub_utils import ensure_repo, upload_dir
-os.makedirs("/content/stats_up", exist_ok=True)
-!cp /content/router_stats.json /content/stats_up/
-ensure_repo(ART.router_stats, repo_type="dataset")
-upload_dir("/content/stats_up", ART.router_stats, repo_type="dataset")
+_push_stats(len(enc))
+print("calibration complete and pushed")
 
 # %% [markdown]
 # ## Part B — weight surgery (switch to **CPU high-RAM** runtime, rerun Bootstrap)
