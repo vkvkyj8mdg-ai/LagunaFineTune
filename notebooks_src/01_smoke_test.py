@@ -150,7 +150,11 @@ trainer = Trainer(model=peft_model, data_collator=collate, train_dataset=ds,
                   args=TrainingArguments(output_dir="/content/smoke", max_steps=10,
                                          per_device_train_batch_size=2, gradient_accumulation_steps=1,
                                          learning_rate=1e-4, bf16=True, logging_steps=1,
-                                         gradient_checkpointing=True, report_to=[]))
+                                         gradient_checkpointing=True, report_to=[],
+                                         # save_pretrained can't serialize Experts4bit's quant-state
+                                         # dicts — checkpointing of this model saves TRAINABLE params
+                                         # only (see notebook 05), never the full state dict
+                                         save_strategy="no"))
 result = trainer.train()
 print(f"\npeak VRAM: {torch.cuda.max_memory_allocated() / 2**30:.1f} GB")
 print("VERDICT: QLoRA works on laguna — proceed to notebook 02." )
