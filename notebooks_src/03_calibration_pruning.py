@@ -31,10 +31,12 @@ from src.project_config import ART
 # so pruning keeps the experts THAT DOMAIN actually uses.
 
 # %%
-# NO -U and transformers PINNED: the Colab image ships a coherent torch 2.11+cu128 /
-# transformers 5.12 / pyarrow stack; -U upgrades break laguna (5.14 removes config
-# attrs) and can ABI-clash datasets/pyarrow. Install only what is missing.
-!pip install -q "transformers==5.12.0" bitsandbytes
+# transformers PINNED to the image version (5.14 breaks laguna); datasets+pyarrow
+# upgraded TOGETHER (the trace datasets use the `Json` feature type, absent from
+# the image's datasets — and upgrading them coherently on a fresh kernel avoids
+# the ABI clash that upgrading mid-session causes). MUST run before anything
+# imports datasets/pyarrow in this kernel.
+!pip install -q "transformers==5.12.0" bitsandbytes "datasets>=5" "pyarrow>=25"
 
 # %%
 # Build ~600 calibration texts from the agentic/code sources (small streamed takes)
