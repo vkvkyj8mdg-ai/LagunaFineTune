@@ -70,27 +70,19 @@ assert n_assist > 0
 
 # %%
 !pip install -q experts4bit-qlora
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
-bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                         bnb_4bit_compute_dtype=torch.bfloat16,
-                         bnb_4bit_use_double_quant=True)
-try:
-    # NOTE: verify the exact entrypoint against the package README —
-    # https://github.com/pjordanandrsn/experts4bit-qlora
-    import experts4bit_qlora
-    model = experts4bit_qlora.load_moe_4bit(cfg.BASE_MODEL, device_map={"": 0})
-except Exception as e:
-    print(f"experts4bit-qlora path failed ({e!r}) — plain bnb load; expect the assert to fire")
-    model = AutoModelForCausalLM.from_pretrained(cfg.BASE_MODEL, quantization_config=bnb,
-                                                 device_map="auto", dtype=torch.bfloat16)
-n4 = sum(1 for m in model.modules() if type(m).__name__ == "Linear4bit")
-fp = model.get_memory_footprint() / 2**30
-print(f"Linear4bit modules: {n4} | footprint: {fp:.1f} GB | "
-      f"device_map: {getattr(model, 'hf_device_map', 'single device')}")
-assert fp < 30, (f"{fp:.0f}GB → experts NOT quantized. GO/NO-GO fallbacks (in order): "
-                 f"(1) Axolotl ≥0.18 `quantize_moe_experts: true`; "
-                 f"(2) bf16 LoRA on the PRUNED reap50 model (~33GB, fits A100-40 at seq ≤4096); "
-                 f"(3) A100 80GB tier if offered. Unsloth does NOT support laguna.")
+# src/laguna_e4b.py registers laguna in the loader's architecture registry
+# (verified compatible: same experts-forward contract as Qwen3-MoE, plus one
+# router-bias key rename) and streams the checkpoint straight to NF4 on GPU —
+# the full bf16 model never materializes. Returns the model with trainable
+# per-expert LoRA already attached.
+from src.laguna_e4b import load_laguna_4bit
+model, lm_config = load_laguna_4bit(cfg.BASE_MODEL, r=8, alpha=16)
+alloc = torch.cuda.memory_allocated() / 2**30
+print(f"cuda allocated: {alloc:.1f} GB")
+assert alloc < 30, (f"{alloc:.0f}GB → experts NOT quantized. GO/NO-GO fallbacks (in order): "
+                    f"(1) Axolotl ≥0.18 `quantize_moe_experts: true`; "
+                    f"(2) bf16 LoRA on the PRUNED reap50 model (~33GB, fits A100-40 at seq ≤4096); "
+                    f"(3) A100 80GB tier if offered. Unsloth does NOT support laguna.")
 
 # %%
 # apply_chat_template returns a BatchEncoding dict in transformers v5
@@ -120,16 +112,20 @@ print("size projections:", {f"keep {k}": estimate_params(k) for k in (192, 128)}
 # ## 4. Tiny LoRA run — the go/no-go check
 
 # %%
-from peft import LoraConfig, get_peft_model
+# LoRA surface = the loader's per-expert adapters (already attached, r=8) +
+# attention projections via the package's structural wrapper. No PEFT: it would
+# freeze the ExpertsLoRA params. Plain Trainer trains whatever requires_grad.
 from datasets import Dataset
 from transformers import Trainer, TrainingArguments
-from src.data_prep import to_laguna_text
+from experts4bit_qlora import add_attention_lora
 
 model.config.use_cache = False
-peft_model = get_peft_model(model, LoraConfig(
-    r=8, lora_alpha=16, lora_dropout=0.0, bias="none",
-    task_type="CAUSAL_LM", target_modules=targets))
-peft_model.print_trainable_parameters()
+n_wrapped = add_attention_lora(model, r=8, alpha=16, dtype=torch.bfloat16)
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+total = sum(p.numel() for p in model.parameters())
+print(f"attention projections wrapped: {n_wrapped} | trainable: {trainable/1e6:.1f}M "
+      f"of {total/1e9:.1f}B (incl. per-expert LoRA)")
+peft_model = model  # keep the variable the training cell below uses
 
 dummy = [{"messages": [
     {"role": "user", "content": f"Return the number {i} from a Python function."},

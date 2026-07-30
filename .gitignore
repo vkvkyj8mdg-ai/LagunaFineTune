@@ -10,3 +10,5 @@ data/cache/
 wandb/
 .ipynb_checkpoints/
 hf_cache/
+*_output.ipynb
+logs/
