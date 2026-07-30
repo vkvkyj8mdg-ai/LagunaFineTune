@@ -26,14 +26,16 @@ from experts4bit_qlora import loader, verify_moe_4bit
 
 
 def register_laguna():
-    loader.SUPPORTED_ARCHITECTURES.setdefault("laguna", "mlp.experts")
+    # plain assignment, NOT setdefault: kernels persist across runs, and a stale
+    # registration from an earlier (buggy) shim version must be overwritten
+    loader.SUPPORTED_ARCHITECTURES["laguna"] = "mlp.experts"
     loader.SUPPORTED_MODEL_TYPES.add("laguna")
-    loader.LEGACY_KEY_RENAMES.setdefault("laguna", (
+    loader.LEGACY_KEY_RENAMES["laguna"] = (
         ("mlp.experts.e_score_correction_bias", "mlp.gate.e_score_correction_bias"),
         # disk stores the shared expert SINGULAR; the built module is PLURAL
         # (native from_pretrained applies this same rename via WeightRenaming)
         ("mlp.shared_expert.", "mlp.shared_experts."),
-    ))
+    )
 
 
 def load_laguna_4bit(model_id, r=8, alpha=16, device="cuda", dtype=torch.bfloat16, **kw):
