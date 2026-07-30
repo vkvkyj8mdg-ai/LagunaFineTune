@@ -31,6 +31,14 @@ from src import project_config as cfg
 !python -c "from vllm import LLM; print('vllm import OK')"
 
 # %%
+# MUST run before the first vllm import, in a kernel that has never imported
+# vllm (vllm registers process-global torch types — a re-import after purging
+# sys.modules crashes). In-process engine: the default multiprocess engine core
+# dies silently in Jupyter/CLI kernels and hides its root cause.
+import os
+os.environ["VLLM_ENABLE_V1_MULTIPROCESSING"] = "0"
+os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"
+
 from transformers import AutoTokenizer
 from vllm import LLM
 tok = AutoTokenizer.from_pretrained(cfg.BASE_MODEL)
