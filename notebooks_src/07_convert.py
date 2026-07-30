@@ -1,8 +1,8 @@
 # %% [markdown]
 # # 07 — Merge + convert for the 24GB Mac
 #
-# **Runtime: CPU high-RAM** (merge needs ~40–45GB system RAM — if the standard
-# high-RAM runtime OOMs, use an A100 instance for its 80GB+ system RAM; the GPU idles).
+# **Runtime: CPU** (the merge is shard-streaming now — peak RAM is a few GB;
+# high-RAM only helps the GGUF conversion step's headroom).
 #
 # 1. Merge the LoRA adapter into the pruned BF16 model → push
 # 2. Convert to **GGUF Q4_K_M** (llama.cpp has official laguna support) → push
@@ -28,19 +28,20 @@ from src.project_config import ART
 PRUNED_REPO = ART.pruned_reap50
 
 # %% [markdown]
-# ## 1. Merge LoRA → BF16 (CPU, ~30–60 min)
+# ## 1. Merge adapter → BF16 (CPU shard-streaming, low RAM — no PEFT involved)
+# Folds the trainable-params checkpoint (LoRALinear + per-expert ExpertsLoRA
+# deltas, scaling alpha/r) into the per-expert bf16 checkpoint one shard at a
+# time. Code-reviewed but not yet run-verified: after the GGUF step, spot-check
+# a generation against notebook 06's adapter-based outputs before trusting it.
 
 # %%
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import PeftModel
+!pip install -q experts4bit-qlora
+from huggingface_hub import snapshot_download, hf_hub_download
+from src.laguna_e4b import merge_adapter_into_checkpoint
 
-model = AutoModelForCausalLM.from_pretrained(PRUNED_REPO, dtype=torch.bfloat16,
-                                             device_map={"": "cpu"}, low_cpu_mem_usage=True)
-model = PeftModel.from_pretrained(model, ART.sft_adapter, subfolder="final")
-model = model.merge_and_unload()
-model.save_pretrained("/content/merged", safe_serialization=True, max_shard_size="5GB")
-AutoTokenizer.from_pretrained(PRUNED_REPO).save_pretrained("/content/merged")
+src = snapshot_download(PRUNED_REPO)
+adapter = hf_hub_download(ART.sft_adapter, "adapter-final.pt")
+merge_adapter_into_checkpoint(src, adapter, "/content/merged")
 
 from src.hub_utils import upload_dir
 upload_dir("/content/merged", ART.sft_merged)

@@ -61,24 +61,19 @@ texts = [to_laguna_text(tok, s) for s in calib]
 print(f"{len(texts)} calibration docs, ~{sum(map(len, texts)) / 4 / 1e6:.1f}M tokens (char/4 est)")
 
 # %%
-# BOTH native transformers and poolside's remote code fuse experts into 3D
-# nn.Parameters, which plain bitsandbytes does NOT quantize (95% of params stay
-# bf16 → ~60GB). Load via the expert-quantizing loader validated in notebook 01.
-# On the fused layout the per-expert output-norm hooks cannot attach, so REAP
-# saliency uses its documented gate×freq fallback (src/router_stats.py).
+# Loader path validated by notebook 01: NF4 experts via the streaming loader
+# (plain bnb skips fused 3D experts). The experts module becomes a fused
+# container, so per-expert output-norm hooks can't attach — REAP saliency uses
+# its documented gate×freq fallback (src/router_stats.py). Router hooks on
+# mlp.gate capture the exact selection rule regardless.
 !pip install -q experts4bit-qlora
 import torch
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
-try:
-    import experts4bit_qlora
-    model = experts4bit_qlora.load_moe_4bit(cfg.BASE_MODEL, device_map={"": 0})
-except Exception as e:
-    raise RuntimeError("expert-quantized load failed — calibration on A100-40 needs it; "
-                       "see notebook 01 fallbacks (Axolotl quantize_moe_experts)") from e
+from src.laguna_e4b import load_laguna_4bit
+model, _ = load_laguna_4bit(cfg.BASE_MODEL)   # LoRA rank irrelevant: forward-only
 model.eval()
-fp = model.get_memory_footprint() / 2**30
-print(f"footprint: {fp:.1f} GB (expect ~18-20)")
-assert fp < 30, f"{fp:.0f}GB — experts not quantized"
+alloc = torch.cuda.memory_allocated() / 2**30
+print(f"cuda allocated: {alloc:.1f} GB (expect ~19-22)")
+assert alloc < 30
 
 # %%
 from src.router_stats import RouterStatsCollector, ExpertNormCollector, save_stats
@@ -182,10 +177,10 @@ from src.hub_utils import upload_dir, ensure_repo
 
 tok = AutoTokenizer.from_pretrained(cfg.BASE_MODEL)
 problems = get_problems("humaneval", limit=30)
+from src.laguna_e4b import load_laguna_4bit
 quick = {}
 for repo_id in (ART.pruned_reap25, ART.pruned_reap375, ART.pruned_reap50, ART.pruned_freq50):
-    import experts4bit_qlora
-    model = experts4bit_qlora.load_moe_4bit(repo_id, device_map={"": 0})
+    model, _ = load_laguna_4bit(repo_id)
     samples, stats = generate_solutions(model, tok, problems, max_new_tokens=2048)
     quick[repo_id] = {"stats": stats, "eval": score(samples, "humaneval",
                                                     tag=repo_id.split("/")[-1])}

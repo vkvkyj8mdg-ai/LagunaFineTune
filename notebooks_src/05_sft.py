@@ -32,56 +32,34 @@ from src.project_config import ART
 # %%
 PRUNED_REPO = ART.pruned_reap50   # ← decision from notebook 03 Part C
 PROFILE = True                    # True: 20-step timing pass. Flip to False for the real run.
-LORA_R = 32
 LR = 1e-4
 EPOCHS = 1
 
 # %%
 import torch
 from datasets import load_dataset
-from transformers import (AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig,
-                          Trainer, TrainingArguments)
-from peft import LoraConfig, get_peft_model
-from src.laguna_arch import attention_lora_targets
+from transformers import Trainer, TrainingArguments, AutoTokenizer
 
-tok = AutoTokenizer.from_pretrained(PRUNED_REPO)
+tok = AutoTokenizer.from_pretrained(cfg.BASE_MODEL)
 data = load_dataset(ART.sft_dataset, split="train")
 print(data)
 
-# Plain bitsandbytes does NOT quantize the fused 3D expert tensors (both native and
-# remote laguna code fuse them) — use the expert-quantizing loader validated in
-# notebook 01. device_map={"":0}, never "auto", for training — "auto" silently
-# CPU-offloads overflow and turns 18h into 500h with no error.
-bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                         bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
-try:
-    import experts4bit_qlora
-    model = experts4bit_qlora.load_moe_4bit(
-        PRUNED_REPO, device_map={"": 0},
-        attn_implementation="kernels-community/flash-attn2")
-except Exception as e:
-    print(f"expert-quantized loader failed ({e!r}) — plain bnb; the assert below decides")
-    model = AutoModelForCausalLM.from_pretrained(
-        PRUNED_REPO, quantization_config=bnb, device_map={"": 0}, dtype=torch.bfloat16,
-        attn_implementation="kernels-community/flash-attn2")
+# Loader path validated end-to-end by notebook 01: NF4 experts via the streaming
+# loader (plain bnb skips fused 3D experts), with per-expert LoRA(r=4) attached
+# during loading. PEFT is deliberately NOT used — get_peft_model would freeze the
+# per-expert adapters; the package's structural wrappers + plain Trainer train
+# every requires_grad param.
+from src.laguna_e4b import load_laguna_4bit, add_extra_lora
+from experts4bit_qlora import add_attention_lora
+
+model, _ = load_laguna_4bit(PRUNED_REPO, r=cfg.SFT_EXPERT_LORA_R, alpha=cfg.SFT_LORA_ALPHA)
 model.config.use_cache = False
-
-n4 = sum(1 for m in model.modules() if type(m).__name__ == "Linear4bit")
-fp = model.get_memory_footprint() / 2**30
-print(f"Linear4bit modules: {n4} | footprint: {fp:.1f} GB | device_map: {getattr(model, 'hf_device_map', 'n/a')}")
-assert fp < 20, (f"{fp:.0f}GB — experts not quantized. Fallbacks: Axolotl "
-                 f"`quantize_moe_experts: true`, or bf16 LoRA (reap50 only, seq ≤4096).")
-
-# alpha fixed at 32 with alpha/r scaling keeps optimal LR ~rank-independent; dropout 0
-# per every serious LoRA-SFT reproduction. Targets = attention (incl. g_proj) + shared
-# expert — NOT "all-linear", which in the per-expert layout would LoRA all ~15K routed
-# expert Linears.
-targets = attention_lora_targets(model)
-model = get_peft_model(model, LoraConfig(r=LORA_R, lora_alpha=32, lora_dropout=0.0,
-                                         bias="none", task_type="CAUSAL_LM",
-                                         target_modules=targets))
-model.enable_input_require_grads()   # required with grad checkpointing + frozen quantized base
-model.print_trainable_parameters()
+n_attn = add_attention_lora(model, r=cfg.SFT_LORA_R, alpha=cfg.SFT_LORA_ALPHA,
+                            dtype=torch.bfloat16)
+n_extra = add_extra_lora(model, r=cfg.SFT_LORA_R, alpha=cfg.SFT_LORA_ALPHA)
+trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+print(f"attention wraps: {n_attn} | g_proj+shared-expert wraps: {n_extra} | "
+      f"trainable: {trainable / 1e6:.0f}M | cuda: {torch.cuda.memory_allocated() / 2**30:.1f} GB")
 
 # %%
 # Packed flattening collator: concatenates each batch into one sequence with
@@ -93,14 +71,37 @@ from transformers import DataCollatorWithFlattening
 collate = DataCollatorWithFlattening(return_flash_attn_kwargs=True)
 
 # %%
-# Resume from the newest Hub checkpoint if one exists (Colab died mid-run)
-from src.hub_utils import latest_hub_checkpoint, download_checkpoint, HubCheckpointCallback
-resume_dir = None
-found = latest_hub_checkpoint(ART.sft_adapter)
-if found and not PROFILE:
-    name, step = found
-    print(f"resuming from Hub checkpoint {name}")
-    resume_dir = download_checkpoint(ART.sft_adapter, name, "/content/resume")
+# Adapter-only checkpointing: Trainer's own save path crashes on the quantized
+# expert modules (unserializable quant-state dicts), so save_strategy is OFF and
+# a callback pushes {trainable params, step} (~1-2GB) to the Hub instead.
+# Resume restores adapter WEIGHTS with a fresh optimizer/schedule — acceptable
+# for a 1-epoch SFT; worst case a disconnect costs some LR-schedule fidelity.
+import re as _re
+from huggingface_hub import hf_hub_download
+from transformers import TrainerCallback
+from src.hub_utils import api, ensure_repo
+from src.laguna_e4b import load_trainable, save_trainable
+
+ensure_repo(ART.sft_adapter)
+resume_step = None
+if not PROFILE:
+    ckpts = sorted(int(m.group(1)) for f in api().list_repo_files(ART.sft_adapter)
+                   if (m := _re.match(r"adapter-step-(\d+)\.pt$", f)))
+    if ckpts:
+        path = hf_hub_download(ART.sft_adapter, f"adapter-step-{ckpts[-1]}.pt")
+        resume_step = load_trainable(model, path)
+        print(f"resumed adapter weights from step {resume_step}")
+
+
+class AdapterHubCallback(TrainerCallback):
+    def on_step_end(self, args, state, control, model=None, **kw):
+        if state.global_step and state.global_step % cfg.SFT_SAVE_EVERY == 0:
+            path = f"/content/adapter-step-{state.global_step}.pt"
+            n = save_trainable(model, path, step=state.global_step, alpha=cfg.SFT_LORA_ALPHA)
+            api().upload_file(path_or_fileobj=path, repo_id=ART.sft_adapter,
+                              path_in_repo=f"adapter-step-{state.global_step}.pt")
+            print(f"pushed adapter checkpoint @ step {state.global_step} ({n} tensors)")
+
 
 args = TrainingArguments(
     output_dir="/content/ckpt",
@@ -116,12 +117,10 @@ args = TrainingArguments(
     # produces no gradients
     gradient_checkpointing_kwargs={"use_reentrant": False},
     optim="adamw_torch_fused",
-    logging_steps=5, save_steps=40, save_total_limit=2, report_to=[],
-    # save_steps=40 ≈ every ~640 samples ≈ 30-40 min — the plan's disconnect budget
-    # (200 was 1.5-3h of lost work per disconnect)
+    logging_steps=5, save_strategy="no", report_to=[],
 )
 trainer = Trainer(model=model, args=args, train_dataset=data, data_collator=collate,
-                  callbacks=[] if PROFILE else [HubCheckpointCallback(ART.sft_adapter)])
+                  callbacks=[] if PROFILE else [AdapterHubCallback()])
 
 # %%
 import time
@@ -144,11 +143,11 @@ if PROFILE:
     else:
         print("within budget — set PROFILE = False and rerun from the top.")
 else:
-    model.save_pretrained("/content/final_adapter")
-    tok.save_pretrained("/content/final_adapter")
-    from src.hub_utils import upload_dir
-    upload_dir("/content/final_adapter", ART.sft_adapter, path_in_repo="final")
-    print("adapter pushed →", ART.sft_adapter, "/final")
+    save_trainable(model, "/content/adapter-final.pt",
+                   step=trainer.state.global_step, alpha=cfg.SFT_LORA_ALPHA)
+    api().upload_file(path_or_fileobj="/content/adapter-final.pt",
+                      repo_id=ART.sft_adapter, path_in_repo="adapter-final.pt")
+    print("final adapter pushed →", ART.sft_adapter, "adapter-final.pt")
 
 # %% [markdown]
 # ### Quick vibe check before spending eval budget

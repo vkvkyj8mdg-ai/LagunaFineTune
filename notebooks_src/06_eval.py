@@ -32,26 +32,25 @@ PRUNED_REPO = ART.pruned_reap50            # same choice as notebook 05
 
 # %%
 import gc, json, torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from peft import PeftModel
+from transformers import AutoTokenizer
+from huggingface_hub import hf_hub_download
+from experts4bit_qlora import add_attention_lora
+from src.laguna_e4b import load_laguna_4bit, add_extra_lora, load_trainable
 from src.eval_utils import get_problems, generate_solutions, score
 
-tok = AutoTokenizer.from_pretrained(PRUNED_REPO)
-bnb = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4",
-                         bnb_4bit_compute_dtype=torch.bfloat16, bnb_4bit_use_double_quant=True)
+tok = AutoTokenizer.from_pretrained(cfg.BASE_MODEL)
 
 def evaluate(tag, with_adapter):
-    # fused 3D experts aren't quantized by plain bnb — use the loader from notebook 01
-    try:
-        import experts4bit_qlora
-        model = experts4bit_qlora.load_moe_4bit(PRUNED_REPO, device_map={"": 0})
-    except Exception as e:
-        print(f"expert-quantized loader unavailable ({e!r}); plain bnb load")
-        model = AutoModelForCausalLM.from_pretrained(PRUNED_REPO, quantization_config=bnb,
-                                                     device_map="auto", dtype=torch.bfloat16)
-    assert model.get_memory_footprint() / 2**30 < 30, "experts not quantized — see notebook 01"
+    # rebuild the EXACT training-time adapter geometry (project_config), then
+    # load the trained weights — load_trainable asserts the key sets match
+    model, _ = load_laguna_4bit(PRUNED_REPO, r=cfg.SFT_EXPERT_LORA_R,
+                                alpha=cfg.SFT_LORA_ALPHA)
     if with_adapter:
-        model = PeftModel.from_pretrained(model, ART.sft_adapter, subfolder="final")
+        add_attention_lora(model, r=cfg.SFT_LORA_R, alpha=cfg.SFT_LORA_ALPHA,
+                           dtype=torch.bfloat16)
+        add_extra_lora(model, r=cfg.SFT_LORA_R, alpha=cfg.SFT_LORA_ALPHA)
+        step = load_trainable(model, hf_hub_download(ART.sft_adapter, "adapter-final.pt"))
+        print(f"loaded adapter (trained to step {step})")
     model.eval()
     out = {}
     for dataset, limit in (("humaneval", None), ("mbpp", 100)):

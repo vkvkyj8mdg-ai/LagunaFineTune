@@ -42,9 +42,18 @@ class Artifacts:
 
 ART = Artifacts()
 
-# Budget guardrails (Colab compute units). Google does NOT publish unit rates and
-# they vary over time — READ THE LIVE RATE off Colab's resource panel and update
-# this number before the big Phase-4 spend. 8.5 is a conservative planning value.
-TOTAL_UNITS = 300
-A100_UNITS_PER_HOUR = 8.5
-SFT_MAX_HOURS = 18         # notebook 05 aborts its projection check above this
+# SFT LoRA geometry — must be IDENTICAL wherever the adapter is built or reloaded
+# (notebooks 05, 06, 07): attention r=32/alpha=32 ("LoRA Without Regret" SFT recipe),
+# per-expert r=4 (= total 32 / top-8, its MoE recipe; attached by the streaming loader).
+SFT_LORA_R = 32
+SFT_LORA_ALPHA = 32
+SFT_EXPERT_LORA_R = 4
+SFT_SAVE_EVERY = 40   # steps between adapter checkpoints (~30-40 min)
+
+# Budget guardrails (Colab compute units). MEASURED 2026-07-30 on this account:
+# 15 units for ~50min A100 + ~10min T4 => A100 ≈ 17.5 units/hr. Balance then: 255.
+TOTAL_UNITS = 255
+A100_UNITS_PER_HOUR = 17.5
+SFT_MAX_HOURS = 8          # ≈140 units at the measured rate; notebook 05's
+                           # projection check aborts above this — trim the dataset
+                           # (04 TOTAL) or MAX_LEN instead of blowing the budget
