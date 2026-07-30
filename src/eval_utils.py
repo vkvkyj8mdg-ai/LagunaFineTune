@@ -99,10 +99,19 @@ def score(samples, dataset="humaneval", workdir="eval_out", tag="run"):
         if results_path.exists():
             with open(results_path) as f:
                 full = json.load(f)
-            # return only the scores — the full record carries per-task solutions
-            # (megabytes) and would bloat the Hub results files and comparison table
-            return {"pass_at_k": full.get("pass_at_k"), "n": len(samples)}
+            # current evalplus stores only per-task records ({date, hash, eval});
+            # compute pass@1 from them (verified layout 2026-07-30)
+            return {"pass_at_k": pass_rates(full["eval"]), "n": len(samples)}
     return {"note": "see stdout above for pass@1 (results file layout changed?)"}
+
+
+def pass_rates(eval_dict):
+    """pass@1 from evalplus per-task records. plus = base AND plus tests pass."""
+    n = max(len(eval_dict), 1)
+    base = sum(1 for r in eval_dict.values() if r and r[0]["base_status"] == "pass")
+    plus = sum(1 for r in eval_dict.values()
+               if r and r[0]["base_status"] == "pass" and r[0]["plus_status"] == "pass")
+    return {"base": {"pass@1": round(base / n, 4)}, "plus": {"pass@1": round(plus / n, 4)}}
 
 
 def pass1(result, variant="plus"):
