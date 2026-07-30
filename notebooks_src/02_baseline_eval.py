@@ -22,7 +22,10 @@ os.environ["HF_TOKEN"] = userdata.get("HF_TOKEN")
 from src import project_config as cfg
 
 # %%
-!pip install -q -U vllm evalplus "transformers>=5.7"
+# vllm PINNED: 0.24.0+ wheels are built against CUDA 13 (libcudart.so.13) and fail
+# to import on Colab's CUDA 12.8 / torch 2.11 image (verified 2026-07-30).
+# 0.23.0 is the newest release that matches the image.
+!pip install -q "vllm==0.23.0" evalplus
 
 # %%
 from transformers import AutoTokenizer
