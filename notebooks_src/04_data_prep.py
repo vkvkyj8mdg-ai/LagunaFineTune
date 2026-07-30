@@ -31,7 +31,7 @@ from src import project_config as cfg
 from src.project_config import ART
 
 # %%
-!pip install -q -U datasets "transformers>=5.7" huggingface_hub
+!pip install -q "transformers==5.12.0"  # datasets/hf_hub: use the image versions
 
 # %%
 TOTAL = 40_000          # mix size; shrink if notebook 05's budget projection is over

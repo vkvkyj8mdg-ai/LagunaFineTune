@@ -26,7 +26,7 @@ from src import project_config as cfg
 assert cfg.HF_USER != "CHANGE_ME", "Edit src/project_config.py (HF_USER + REPO_URL), push, re-clone."
 
 # %%
-!pip install -q -U "transformers>=5.7" accelerate bitsandbytes peft trl datasets
+!pip install -q "transformers==5.12.0" bitsandbytes peft
 !nvidia-smi
 import torch, transformers
 # HARD gate: transformers < 5.7 has no laguna WeightRenaming rules and silently

@@ -31,7 +31,10 @@ from src.project_config import ART
 # so pruning keeps the experts THAT DOMAIN actually uses.
 
 # %%
-!pip install -q -U "transformers>=5.7" accelerate bitsandbytes datasets
+# NO -U and transformers PINNED: the Colab image ships a coherent torch 2.11+cu128 /
+# transformers 5.12 / pyarrow stack; -U upgrades break laguna (5.14 removes config
+# attrs) and can ABI-clash datasets/pyarrow. Install only what is missing.
+!pip install -q "transformers==5.12.0" bitsandbytes
 
 # %%
 # Build ~600 calibration texts from the agentic/code sources (small streamed takes)
@@ -110,7 +113,6 @@ upload_dir("/content/stats_up", ART.router_stats, repo_type="dataset")
 # (prune → upload → delete) to stay inside Colab's disk.
 
 # %%
-!pip install -q -U safetensors huggingface_hub torch --index-url https://download.pytorch.org/whl/cpu
 from huggingface_hub import snapshot_download, hf_hub_download
 stats_path = hf_hub_download(ART.router_stats, "router_stats.json", repo_type="dataset")
 src_dir = snapshot_download(cfg.BASE_MODEL)   # ~66GB, ~30–60 min
@@ -168,7 +170,7 @@ for repo_id, keep in variants.items():
 # ~30–45 min per variant). Compare against notebook 02's base score.
 
 # %%
-!pip install -q -U "transformers>=5.7" accelerate bitsandbytes evalplus
+!pip install -q "transformers==5.12.0" bitsandbytes evalplus
 !pip install -q experts4bit-qlora
 import gc, json, torch
 from transformers import AutoTokenizer

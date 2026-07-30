@@ -26,7 +26,7 @@ from src import project_config as cfg
 from src.project_config import ART
 
 # %%
-!pip install -q -U "transformers>=5.7" accelerate bitsandbytes peft datasets kernels
+!pip install -q "transformers==5.12.0" bitsandbytes kernels
 !pip install -q experts4bit-qlora
 
 # %%

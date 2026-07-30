@@ -24,7 +24,7 @@ from src import project_config as cfg
 from src.project_config import ART
 
 # %%
-!pip install -q -U "transformers>=5.7" accelerate bitsandbytes peft evalplus
+!pip install -q "transformers==5.12.0" bitsandbytes evalplus
 !pip install -q experts4bit-qlora
 
 # %%
